@@ -1,0 +1,124 @@
+services:
+  app:
+    build: .
+    container_name: spring-app
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      graylog-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./config/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./config/grafana-dashboard.json:/var/lib/grafana/dashboards/spring-dashboard.json:ro
+    depends_on:
+      - prometheus
+
+  mongodb:
+    image: mongo:5.0
+    container_name: mongodb
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongo", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  opensearch:
+    image: opensearchproject/opensearch:2.11.1
+    container_name: opensearch
+    environment:
+      - discovery.type=single-node
+      - cluster.name=graylog
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - os_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE 'green|yellow'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  graylog:
+    image: graylog/graylog:5.2.12
+    container_name: graylog
+    entrypoint: ["/usr/bin/tini", "--", "wait-for-it", "opensearch:9200", "--", "wait-for-it", "mongodb:27017", "--", "/docker-entrypoint.sh"]
+    environment:
+      GRAYLOG_SERVER_JAVA_OPTS: "-Xms512m -Xmx512m"
+      GRAYLOG_NODE_ID: 803152ef-a077-44fa-90f7-ee24f9f4a7c2
+      GRAYLOG_PASSWORD_SECRET: secretpasswordpepperofatleast32characters
+      GRAYLOG_ROOT_PASSWORD_SHA2: 8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918
+      GRAYLOG_HTTP_BIND_ADDRESS: 0.0.0.0:9000
+      GRAYLOG_HTTP_EXTERNAL_URI: http://127.0.0.1:9000/
+      GRAYLOG_ELASTICSEARCH_HOSTS: http://opensearch:9200
+      GRAYLOG_MONGODB_URI: mongodb://mongodb:27017/graylog
+    ports:
+      - "9000:9000"
+      - "12201:12201/udp"
+    volumes:
+      - graylog_data:/usr/share/graylog/data
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/lbstatus | grep -q ALIVE"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  graylog-setup:
+    image: curlimages/curl:8.11.1
+    container_name: graylog-setup
+    depends_on:
+      graylog:
+        condition: service_healthy
+    volumes:
+      - ./config/graylog-setup.sh:/graylog-setup.sh:ro
+      - ./config/graylog-gelf-input.json:/graylog-gelf-input.json:ro
+    entrypoint: ["/bin/sh", "/graylog-setup.sh"]
+    restart: "on-failure"
+
+volumes:
+  mongo_data:
+  os_data:
+  graylog_data:
