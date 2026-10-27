@@ -56,3 +56,6 @@ Encerrar: `docker compose down`
 
 **Graylog:**
 ![Graylog](docs/img/graylog.png)
+
+**Containers**
+![Containers](docs/img/containers.png)
